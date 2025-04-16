@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>PDF分割ツール</title>
+  <script src="https://unpkg.com/pdf-lib"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.0/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.9.179/pdf.min.js"></script>
+  <style>
+    body { font-family: sans-serif; padding: 2em; max-width: 1000px; margin: auto; }
+    h1 { font-size: 1.5em; margin-bottom: 1em; }
+    .meta-inputs input { margin: 0.5em 0.5em 1em 0; padding: 0.4em; font-size: 1em; }
+    .page-block { margin-bottom: 2em; border-bottom: 1px solid #ccc; padding-bottom: 1em; }
+    canvas { border: 1px solid #ccc; display: block; margin-bottom: 0.5em; max-width: 100%; }
+    select { margin-bottom: 1em; padding: 0.3em; }
+    button { margin-top: 2em; padding: 0.6em 1.2em; font-size: 1.1em; }
+  </style>
+</head>
+<body>
+  <h1>PDF分割</h1>
+
+  <input type="file" id="fileInput" accept="application/pdf">
+  <div class="meta-inputs">
+    <input type="text" id="year" placeholder="年度">
+    <input type="text" id="school" placeholder="大学名">
+    <input type="text" id="subject" placeholder="科目">
+  </div>
+
+  <div id="pageList"></div>
+
+  <button id="splitBtn">分割してZIPで保存</button>
+
+  <script>
+    const fileInput = document.getElementById("fileInput");
+    const pageList = document.getElementById("pageList");
+    const splitBtn = document.getElementById("splitBtn");
+
+    let pageGroups = [];
+    let originalArrayBuffer;
+
+    fileInput.addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const arrayBuffer = await file.arrayBuffer();
+      originalArrayBuffer = arrayBuffer.slice(0); 
+
+      const pdfDoc = await PDFLib.PDFDocument.load(arrayBuffer);
+      const pageCount = pdfDoc.getPageCount();
+      pageGroups = Array.from({ length: pageCount }, (_, i) => ({ index: i, group: 0 }));
+
+      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+      const pdf = await loadingTask.promise;
+
+      pageList.innerHTML = "";
+
+      for (let i = 0; i < pageCount; i++) {
+        const page = await pdf.getPage(i + 1);
+        const viewport = page.getViewport({ scale: 1.0 });
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        await page.render({ canvasContext: context, viewport: viewport }).promise;
+
+        const container = document.createElement("div");
+        container.className = "page-block";
+        container.innerHTML = `<div>ページ ${i + 1}</div>`;
+        container.appendChild(canvas);
+
+        const select = document.createElement("select");
+        select.innerHTML =
+          `<option value="0">分割なし</option>` +
+          Array.from({ length: 10 }, (_, j) => `<option value="${j + 1}">大問 ${j + 1}</option>`).join("");
+        select.value = "0";
+        select.addEventListener("change", (e) => {
+          pageGroups[i].group = parseInt(e.target.value);
+        });
+
+        container.appendChild(select);
+        pageList.appendChild(container);
+      }
+    });
+
+    splitBtn.addEventListener("click", async () => {
+      if (!originalArrayBuffer) return alert("PDFを読み込んでください");
+
+      const originalPdf = await PDFLib.PDFDocument.load(originalArrayBuffer);
+      const zip = new JSZip();
+
+      const grouped = pageGroups.reduce((acc, p) => {
+        if (p.group === 0) return acc;
+        if (!acc[p.group]) acc[p.group] = [];
+        acc[p.group].push(p.index);
+        return acc;
+      }, {});
+
+      const school = document.getElementById("school").value || "school";
+      const year = document.getElementById("year").value || "year";
+      const subject = document.getElementById("subject").value || "subject";
+
+      for (const group in grouped) {
+        const newPdf = await PDFLib.PDFDocument.create();
+        const copiedPages = await newPdf.copyPages(originalPdf, grouped[group]);
+        copiedPages.forEach(pg => newPdf.addPage(pg));
+        const pdfBytes = await newPdf.save();
+        const name = `${year}_${school}_${subject}_大問${group}.pdf`;
+        zip.file(name, pdfBytes);
+      }
+
+      const content = await zip.generateAsync({ type: "blob" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(content);
+      a.download = `${year}_${school}_${subject}_分割.zip`;
+      a.click();
+    });
+  </script>
+</body>
+</html>
